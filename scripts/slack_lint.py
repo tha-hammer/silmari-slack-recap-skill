@@ -47,6 +47,14 @@ def _protect(text: str) -> tuple[str, list[str]]:
 
     text = FENCE_RE.sub(stash_fence, text)
 
+    # An opening ``` with no closing one: protect it through end of text so
+    # its contents are not linted, and strip the language hint like rule 4.
+    open_at = text.find("```")
+    if open_at != -1:
+        tail = re.sub(r"^```[A-Za-z0-9_+\-#]+[ \t]*\n", "```\n", text[open_at:])
+        stash.append(tail)
+        text = text[:open_at] + f"\x00FENCE{len(stash) - 1}\x00"
+
     def stash_inline(m: re.Match) -> str:
         stash.append(m.group(0))
         return f"\x00ICODE{len(stash) - 1}\x00"
@@ -74,9 +82,10 @@ def _double_asterisk_to_single(text: str) -> str:
 
 def _md_headings_to_bold(text: str) -> str:
     # Rule 2: heading lines become *bold* on their own line.
+    # Content already wrapped as *x* (from rule 1) is not wrapped again.
     return re.sub(
         r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$",
-        lambda m: f"*{m.group(1).strip()}*",
+        lambda m: m.group(1) if re.fullmatch(r"\*[^*\n]+\*", m.group(1).strip()) else f"*{m.group(1).strip()}*",
         text,
         flags=re.MULTILINE,
     )
@@ -86,7 +95,7 @@ def _md_links_to_slack(text: str) -> str:
     # Rule 3: [label](url) -> <url|label>. Skip empty url. Tolerate parens
     # in url since Slack <url|label> doesn't care about them.
     return re.sub(
-        r"\[([^\]\n]+)\]\(([^)\s][^)\n]*)\)",
+        r"\[([^\]\n]+)\]\(((?![)\s])(?:[^()\n]|\([^()\n]*\))+)\)",
         lambda m: f"<{m.group(2)}|{m.group(1)}>",
         text,
     )
@@ -162,7 +171,7 @@ def _escape_bare_html(text: str) -> str:
     # <!date^…>. Anything else gets escaped.
     slack_token_re = re.compile(
         r"<(?:"
-        r"@[A-Z0-9]+"                              # user mention
+        r"@[A-Z0-9]+(?:\|[^>]*)?"                  # user mention (optional label)
         r"|#[A-Z0-9]+(?:\|[^>]*)?"                  # channel mention
         r"|![a-zA-Z][^>]*"                          # !here / !channel / !date^…
         r"|mailto:[^>|]+(?:\|[^>]+)?"               # mailto link
